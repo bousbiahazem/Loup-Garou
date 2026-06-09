@@ -1,13 +1,13 @@
 import { io } from "socket.io-client";
 
-export const DEFAULT_API_URL = "http://192.168.1.105:4000/api";
-
+export const DEFAULT_API_URL = "https://loup-garou-te90.onrender.com/api";
 export function createApi(apiBaseUrl) {
   const baseUrl = normalizeApiUrl(apiBaseUrl);
 
   return {
     baseUrl,
     createUser: (payload) => request(baseUrl, "/users", { method: "POST", body: payload }),
+    getUser: (userId) => request(baseUrl, `/users/${encodeURIComponent(userId)}`),
     updateUser: (userId, payload) => request(baseUrl, `/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: payload }),
     getRoles: (language) => request(baseUrl, `/roles?lang=${encodeURIComponent(language)}`),
     createRoom: (hostUserId) => request(baseUrl, "/rooms", { method: "POST", body: { hostUserId } }),

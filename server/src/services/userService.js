@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Room } from "../models/Room.js";
 import { User } from "../models/User.js";
 import { httpError } from "../utils/httpError.js";
@@ -53,6 +54,10 @@ export async function updateUserProfile(userId, payload) {
 }
 
 export async function requireUser(userId) {
+  if (!mongoose.isValidObjectId(userId)) {
+    throw httpError(404, "USER_NOT_FOUND");
+  }
+
   const user = await User.findById(userId);
 
   if (!user) {

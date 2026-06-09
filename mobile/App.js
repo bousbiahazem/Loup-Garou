@@ -30,6 +30,7 @@ export default function App() {
   const [avatarKey, setAvatarKey] = useState(AVATAR_KEYS[0]);
   const [profile, setProfile] = useState(null);
   const [editingProfile, setEditingProfile] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [roles, setRoles] = useState([]);
   const [room, setRoom] = useState(null);
   const [roomMode, setRoomMode] = useState("room");
@@ -104,44 +105,93 @@ export default function App() {
     }
   }
 
+  async function persistProfile(nextProfile) {
+    setProfile(nextProfile);
+    setDisplayName(nextProfile.displayName || "");
+    setLanguage(nextProfile.language || "en");
+    setAvatarColor(nextProfile.avatarColor || AVATAR_COLORS[0]);
+    setAvatarKey(nextProfile.avatarKey || AVATAR_KEYS[0]);
+    await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
+    return nextProfile;
+  }
+
+  function profilePayload(source = profile || {}) {
+    return {
+      displayName: source.displayName || displayName || "Player",
+      language: source.language || language || "en",
+      avatarColor: source.avatarColor || avatarColor || AVATAR_COLORS[0],
+      avatarKey: source.avatarKey || avatarKey || AVATAR_KEYS[0]
+    };
+  }
+
+  function shouldRecreateProfile(error) {
+    return ["USER_NOT_FOUND", "SERVER_ERROR", "REQUEST_FAILED"].includes(error?.message);
+  }
+
+  async function ensureProfile() {
+    if (profile?._id) {
+      try {
+        const response = await api.getUser(profile._id);
+        return persistProfile(response.user);
+      } catch (error) {
+        if (!shouldRecreateProfile(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const response = await api.createUser(profilePayload());
+    return persistProfile(response.user);
+  }
+
   async function saveProfile() {
     await run(async () => {
-      const payload = {
-        displayName,
-        language,
-        avatarColor,
-        avatarKey
-      };
-      const response = profile ? await api.updateUser(profile._id, payload) : await api.createUser(payload);
+      const payload = profilePayload();
+      let response;
 
-      setProfile(response.user);
+      if (profile?._id) {
+        try {
+          response = await api.updateUser(profile._id, payload);
+        } catch (error) {
+          if (!shouldRecreateProfile(error)) {
+            throw error;
+          }
+          response = await api.createUser(payload);
+        }
+      } else {
+        response = await api.createUser(payload);
+      }
+
+      await persistProfile(response.user);
       setEditingProfile(false);
-      await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(response.user));
+      setSettingsOpen(false);
     });
   }
 
   async function createRoom() {
     await run(async () => {
-      const response = await api.createRoom(profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.createRoom(safeProfile._id);
       setRoom(response.room);
       setRoomMode("room");
-      watchRoom(response.room.code);
+      watchRoom(response.room.code, safeProfile._id);
     });
   }
 
   async function joinRoom() {
     await run(async () => {
-      const response = await api.joinRoom(joinCode, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.joinRoom(joinCode, safeProfile._id);
       setRoom(response.room);
       setRoomMode("room");
       setJoinCode("");
-      watchRoom(response.room.code);
+      watchRoom(response.room.code, safeProfile._id);
     });
   }
 
-  function watchRoom(code) {
+  function watchRoom(code, userId = profile?._id) {
     socketRef.current?.disconnect();
-    const socket = createRoomSocket(apiUrl, code, profile._id);
+    const socket = createRoomSocket(apiUrl, code, userId);
     socketRef.current = socket;
     socket.on("room:update", (nextRoom) => setRoom(nextRoom));
     socket.on("room:error", (payload) => setError(t(`error_${payload.error}`)));
@@ -157,7 +207,8 @@ export default function App() {
     const nextCount = Math.max(0, Math.min(role?.max || 50, currentCount + delta));
 
     await run(async () => {
-      const response = await api.updateRoles(room.code, profile._id, {
+      const safeProfile = await ensureProfile();
+      const response = await api.updateRoles(room.code, safeProfile._id, {
         ...room.roleCounts,
         [roleKey]: nextCount
       });
@@ -167,71 +218,82 @@ export default function App() {
 
   async function chooseNarrator(playerId) {
     await run(async () => {
-      const response = await api.setNarrator(room.code, profile._id, playerId);
+      const safeProfile = await ensureProfile();
+      const response = await api.setNarrator(room.code, safeProfile._id, playerId);
       setRoom(response.room);
     });
   }
 
   async function kickPlayer(playerId) {
     await run(async () => {
-      const response = await api.kickPlayer(room.code, profile._id, playerId);
+      const safeProfile = await ensureProfile();
+      const response = await api.kickPlayer(room.code, safeProfile._id, playerId);
       setRoom(response.room);
     });
   }
 
   async function startGame() {
     await run(async () => {
-      const response = await api.startGame(room.code, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.startGame(room.code, safeProfile._id);
       setRoom(response.room);
     });
   }
 
   async function restartGame() {
     await run(async () => {
-      const response = await api.restartGame(room.code, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.restartGame(room.code, safeProfile._id);
       setRoom(response.room);
       setRoomMode("room");
+      setSettingsOpen(false);
     });
   }
 
   async function setPhase(phase) {
     await run(async () => {
-      const response = await api.setPhase(room.code, profile._id, phase);
+      const safeProfile = await ensureProfile();
+      const response = await api.setPhase(room.code, safeProfile._id, phase);
       setRoom(response.room);
     });
   }
 
   async function advanceNight() {
     await run(async () => {
-      const response = await api.advanceNight(room.code, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.advanceNight(room.code, safeProfile._id);
       setRoom(response.room);
     });
   }
 
   async function openVote() {
     await run(async () => {
-      const response = await api.openVote(room.code, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.openVote(room.code, safeProfile._id);
       setRoom(response.room);
     });
   }
 
   async function castVote(targetPlayerId) {
     await run(async () => {
-      const response = await api.castVote(room.code, profile._id, targetPlayerId);
+      const safeProfile = await ensureProfile();
+      const response = await api.castVote(room.code, safeProfile._id, targetPlayerId);
       setRoom(response.room);
     });
   }
 
   async function resolveVote() {
     await run(async () => {
-      const response = await api.resolveVote(room.code, profile._id);
+      const safeProfile = await ensureProfile();
+      const response = await api.resolveVote(room.code, safeProfile._id);
       setRoom(response.room);
     });
   }
 
   async function setLife(player, isAlive) {
     await run(async () => {
-      const response = await api.setLife(room.code, profile._id, player.id, isAlive);
+      const safeProfile = await ensureProfile();
+      const response = await api.setLife(room.code, safeProfile._id, player.id, isAlive);
       setRoom(response.room);
     });
   }
@@ -239,7 +301,8 @@ export default function App() {
   async function leaveRoom() {
     await run(async () => {
       if (room && profile) {
-        await api.leaveRoom(room.code, profile._id);
+        const safeProfile = await ensureProfile();
+        await api.leaveRoom(room.code, safeProfile._id);
       }
 
       socketRef.current?.disconnect();
@@ -247,8 +310,45 @@ export default function App() {
       setRoom(null);
       setRoomMode("room");
       setJoinCode("");
+      setSettingsOpen(false);
       setError("");
     });
+  }
+
+  async function logOut() {
+    const currentRoom = room;
+    const currentProfile = profile;
+
+    if (currentRoom && currentProfile?._id) {
+      try {
+        await api.leaveRoom(currentRoom.code, currentProfile._id);
+      } catch {
+        // Logout should still clear local data even if the server is unreachable.
+      }
+    }
+
+    socketRef.current?.disconnect();
+    socketRef.current = null;
+    await AsyncStorage.removeItem(PROFILE_KEY);
+    setProfile(null);
+    setRoom(null);
+    setRoomMode("room");
+    setJoinCode("");
+    setDisplayName("");
+    setAvatarColor(AVATAR_COLORS[0]);
+    setAvatarKey(AVATAR_KEYS[0]);
+    setEditingProfile(false);
+    setSettingsOpen(false);
+    setError("");
+  }
+
+  function openEditProfile() {
+    setEditingProfile(true);
+    setSettingsOpen(false);
+  }
+
+  function openSettings() {
+    setSettingsOpen((current) => !current);
   }
 
   if (loading) {
@@ -267,7 +367,22 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          <Header title={t("appTitle")} subtitle={room ? `${t(room.phase)} ${room.dayNumber || ""}`.trim() : undefined} />
+          <Header
+            showSettings={Boolean(profile)}
+            title={t("appTitle")}
+            subtitle={room ? `${t(room.phase)} ${room.dayNumber || ""}`.trim() : undefined}
+            onSettingsPress={openSettings}
+          />
+
+          {settingsOpen && profile ? (
+            <SettingsMenu
+              canReset={Boolean(room && room.status === "running" && isNarrator)}
+              t={t}
+              onEditProfile={openEditProfile}
+              onLogOut={logOut}
+              onResetGame={restartGame}
+            />
+          ) : null}
 
           {!profile || editingProfile ? (
             <ProfileScreen
@@ -322,7 +437,7 @@ export default function App() {
               setJoinCode={setJoinCode}
               t={t}
               onCreate={createRoom}
-              onEditProfile={() => setEditingProfile(true)}
+              onEditProfile={openEditProfile}
               onJoin={joinRoom}
             />
           )}
@@ -335,14 +450,29 @@ export default function App() {
   );
 }
 
-function Header({ title, subtitle }) {
+function Header({ showSettings, title, subtitle, onSettingsPress }) {
   return (
     <View style={styles.header}>
       <View style={styles.moon} />
-      <View>
+      <View style={styles.headerText}>
         <Text style={styles.appTitle}>{title}</Text>
         {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
       </View>
+      {showSettings ? (
+        <Pressable onPress={onSettingsPress} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}>
+          <Text style={styles.settingsButtonText}>{"\u2699"}</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function SettingsMenu({ canReset, t, onEditProfile, onLogOut, onResetGame }) {
+  return (
+    <View style={styles.settingsMenu}>
+      <SecondaryButton compact label={t("editProfile")} onPress={onEditProfile} />
+      {canReset ? <SecondaryButton compact label={t("resetGame")} onPress={onResetGame} /> : null}
+      <SecondaryButton compact label={t("logOut")} onPress={onLogOut} />
     </View>
   );
 }
@@ -1016,6 +1146,32 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8
   },
+  headerText: {
+    flex: 1
+  },
+  settingsButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.panelLight,
+    borderWidth: 1,
+    borderColor: theme.border
+  },
+  settingsButtonText: {
+    color: theme.text,
+    fontSize: 22,
+    fontWeight: "900"
+  },
+  settingsMenu: {
+    backgroundColor: theme.panel,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    padding: 12,
+    gap: 10
+  },
   moon: {
     width: 44,
     height: 44,
@@ -1460,3 +1616,4 @@ const styles = StyleSheet.create({
     lineHeight: 20
   }
 });
+

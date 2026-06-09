@@ -13,6 +13,11 @@
     },
     "android": {
       "package": "com.loupgarou.mobile"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d344ce96-2840-49b5-9b2d-9afd0b220b2b"
+      }
     }
   }
 }
