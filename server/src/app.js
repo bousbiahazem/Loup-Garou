@@ -20,6 +20,17 @@ export function createApp({ clientOrigin }) {
 
   app.use((error, _request, response, _next) => {
     console.error(error);
+
+    if (error?.code === 11000) {
+      response.status(409).json({ error: "ACCOUNT_EXISTS" });
+      return;
+    }
+
+    if (error?.name === "ValidationError") {
+      response.status(400).json({ error: "INVALID_PROFILE" });
+      return;
+    }
+
     response.status(error.statusCode || 500).json({ error: error.publicCode || "SERVER_ERROR" });
   });
 

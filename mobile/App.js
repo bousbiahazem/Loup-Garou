@@ -26,6 +26,8 @@ export default function App() {
   const [language, setLanguage] = useState("en");
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMode, setAuthMode] = useState("signup");
   const [avatarColor, setAvatarColor] = useState(AVATAR_COLORS[0]);
   const [avatarKey, setAvatarKey] = useState(AVATAR_KEYS[0]);
   const [profile, setProfile] = useState(null);
@@ -111,55 +113,84 @@ export default function App() {
     setLanguage(nextProfile.language || "en");
     setAvatarColor(nextProfile.avatarColor || AVATAR_COLORS[0]);
     setAvatarKey(nextProfile.avatarKey || AVATAR_KEYS[0]);
+    setPassword("");
+    setAuthMode("login");
     await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
     return nextProfile;
   }
 
-  function profilePayload(source = profile || {}) {
-    return {
-      displayName: source.displayName || displayName || "Player",
-      language: source.language || language || "en",
-      avatarColor: source.avatarColor || avatarColor || AVATAR_COLORS[0],
-      avatarKey: source.avatarKey || avatarKey || AVATAR_KEYS[0]
+  function profilePayload(_source, includePassword = false) {
+    const payload = {
+      displayName,
+      language: language || "en",
+      avatarColor: avatarColor || AVATAR_COLORS[0],
+      avatarKey: avatarKey || AVATAR_KEYS[0]
     };
+
+    if (includePassword && password) {
+      payload.password = password;
+    }
+
+    return payload;
   }
 
-  function shouldRecreateProfile(error) {
-    return ["USER_NOT_FOUND", "SERVER_ERROR", "REQUEST_FAILED"].includes(error?.message);
+  function shouldRequireLogin(error) {
+    return error?.message === "USER_NOT_FOUND";
+  }
+
+  async function clearLocalProfile() {
+    socketRef.current?.disconnect();
+    socketRef.current = null;
+    await AsyncStorage.removeItem(PROFILE_KEY);
+    setProfile(null);
+    setRoom(null);
+    setRoomMode("room");
+    setJoinCode("");
+    setPassword("");
+    setEditingProfile(false);
+    setSettingsOpen(false);
+    setAuthMode("login");
   }
 
   async function ensureProfile() {
-    if (profile?._id) {
-      try {
-        const response = await api.getUser(profile._id);
-        return persistProfile(response.user);
-      } catch (error) {
-        if (!shouldRecreateProfile(error)) {
-          throw error;
-        }
-      }
+    if (!profile?._id) {
+      throw new Error("PROFILE_LOGIN_REQUIRED");
     }
 
-    const response = await api.createUser(profilePayload());
-    return persistProfile(response.user);
+    try {
+      const response = await api.getUser(profile._id);
+      return persistProfile(response.user);
+    } catch (error) {
+      if (shouldRequireLogin(error)) {
+        await clearLocalProfile();
+        throw new Error("PROFILE_LOGIN_REQUIRED");
+      }
+
+      throw error;
+    }
   }
 
   async function saveProfile() {
     await run(async () => {
-      const payload = profilePayload();
       let response;
 
-      if (profile?._id) {
-        try {
-          response = await api.updateUser(profile._id, payload);
-        } catch (error) {
-          if (!shouldRecreateProfile(error)) {
-            throw error;
-          }
-          response = await api.createUser(payload);
+      if (!profile) {
+        if (authMode === "login") {
+          response = await api.loginUser({ displayName, password });
+        } else {
+          response = await api.createUser(profilePayload(null, true));
         }
       } else {
-        response = await api.createUser(payload);
+        try {
+          response = await api.updateUser(profile._id, profilePayload(null, true));
+        } catch (error) {
+          if (shouldRequireLogin(error)) {
+            await clearLocalProfile();
+            throw new Error("PROFILE_LOGIN_REQUIRED");
+          }
+
+          throw error;
+        }
       }
 
       await persistProfile(response.user);
@@ -335,6 +366,8 @@ export default function App() {
     setRoomMode("room");
     setJoinCode("");
     setDisplayName("");
+    setPassword("");
+    setAuthMode("login");
     setAvatarColor(AVATAR_COLORS[0]);
     setAvatarKey(AVATAR_KEYS[0]);
     setEditingProfile(false);
@@ -343,6 +376,7 @@ export default function App() {
   }
 
   function openEditProfile() {
+    setPassword("");
     setEditingProfile(true);
     setSettingsOpen(false);
   }
@@ -386,16 +420,20 @@ export default function App() {
 
           {!profile || editingProfile ? (
             <ProfileScreen
+              authMode={authMode}
               avatarColor={avatarColor}
               avatarKey={avatarKey}
               displayName={displayName}
               hasProfile={Boolean(profile)}
               isArabic={isArabic}
               language={language}
+              password={password}
+              setAuthMode={setAuthMode}
               setAvatarColor={setAvatarColor}
               setAvatarKey={setAvatarKey}
               setDisplayName={setDisplayName}
               setLanguage={setLanguage}
+              setPassword={setPassword}
               t={t}
               onCancel={() => setEditingProfile(false)}
               onSubmit={saveProfile}
@@ -478,26 +516,43 @@ function SettingsMenu({ canReset, t, onEditProfile, onLogOut, onResetGame }) {
 }
 
 function ProfileScreen({
+  authMode,
   avatarColor,
   avatarKey,
   displayName,
   hasProfile,
   isArabic,
   language,
+  password,
+  setAuthMode,
   setAvatarColor,
   setAvatarKey,
   setDisplayName,
   setLanguage,
+  setPassword,
   t,
   onCancel,
   onSubmit
 }) {
+  const isLogin = !hasProfile && authMode === "login";
+
   return (
     <View style={styles.panel}>
-      <Text style={[styles.title, isArabic && styles.rtlText]}>{t("profileTitle")}</Text>
-      <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("profileSubtitle")}</Text>
+      <Text style={[styles.title, isArabic && styles.rtlText]}>{t(isLogin ? "loginTitle" : "profileTitle")}</Text>
+      <Text style={[styles.muted, isArabic && styles.rtlText]}>{t(isLogin ? "loginSubtitle" : "profileSubtitle")}</Text>
+      {!hasProfile ? (
+        <SegmentedControl
+          options={[
+            { code: "signup", label: t("signupMode") },
+            { code: "login", label: t("loginMode") }
+          ]}
+          value={authMode}
+          onChange={setAuthMode}
+        />
+      ) : null}
       <Field label={t("displayName")} isArabic={isArabic}>
         <TextInput
+          autoCapitalize="none"
           placeholder={t("displayNamePlaceholder")}
           placeholderTextColor={theme.muted}
           value={displayName}
@@ -505,30 +560,45 @@ function ProfileScreen({
           style={[styles.input, isArabic && styles.rtlInput]}
         />
       </Field>
-      <Text style={[styles.label, isArabic && styles.rtlText]}>{t("language")}</Text>
-      <SegmentedControl options={LANGUAGES} value={language} onChange={setLanguage} />
-      <Text style={[styles.label, isArabic && styles.rtlText]}>{t("avatar")}</Text>
-      <View style={styles.avatarPicker}>
-        {AVATAR_KEYS.map((key) => (
-          <Pressable
-            key={key}
-            onPress={() => setAvatarKey(key)}
-            style={[styles.avatarChoice, avatarKey === key && styles.avatarChoiceActive]}
-          >
-            <Avatar color={avatarColor} name={key} avatarKey={key} />
-          </Pressable>
-        ))}
-      </View>
-      <View style={styles.colorPicker}>
-        {AVATAR_COLORS.map((color) => (
-          <Pressable
-            key={color}
-            onPress={() => setAvatarColor(color)}
-            style={[styles.colorSwatch, { backgroundColor: color }, avatarColor === color && styles.colorSwatchActive]}
-          />
-        ))}
-      </View>
-      <PrimaryButton label={t("saveProfile")} onPress={onSubmit} />
+      <Field label={t("password")} isArabic={isArabic}>
+        <TextInput
+          autoCapitalize="none"
+          placeholder={hasProfile ? t("newPasswordPlaceholder") : t("passwordPlaceholder")}
+          placeholderTextColor={theme.muted}
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+          style={[styles.input, isArabic && styles.rtlInput]}
+        />
+      </Field>
+      {!isLogin ? (
+        <>
+          <Text style={[styles.label, isArabic && styles.rtlText]}>{t("language")}</Text>
+          <SegmentedControl options={LANGUAGES} value={language} onChange={setLanguage} />
+          <Text style={[styles.label, isArabic && styles.rtlText]}>{t("avatar")}</Text>
+          <View style={styles.avatarPicker}>
+            {AVATAR_KEYS.map((key) => (
+              <Pressable
+                key={key}
+                onPress={() => setAvatarKey(key)}
+                style={[styles.avatarChoice, avatarKey === key && styles.avatarChoiceActive]}
+              >
+                <Avatar color={avatarColor} name={key} avatarKey={key} />
+              </Pressable>
+            ))}
+          </View>
+          <View style={styles.colorPicker}>
+            {AVATAR_COLORS.map((color) => (
+              <Pressable
+                key={color}
+                onPress={() => setAvatarColor(color)}
+                style={[styles.colorSwatch, { backgroundColor: color }, avatarColor === color && styles.colorSwatchActive]}
+              />
+            ))}
+          </View>
+        </>
+      ) : null}
+      <PrimaryButton label={isLogin ? t("login") : hasProfile ? t("saveProfile") : t("createAccount")} onPress={onSubmit} />
       {hasProfile ? <SecondaryButton label={t("cancel")} onPress={onCancel} /> : null}
     </View>
   );

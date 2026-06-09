@@ -7,6 +7,7 @@ export function createApi(apiBaseUrl) {
   return {
     baseUrl,
     createUser: (payload) => request(baseUrl, "/users", { method: "POST", body: payload }),
+    loginUser: (payload) => request(baseUrl, "/users/login", { method: "POST", body: payload }),
     getUser: (userId) => request(baseUrl, `/users/${encodeURIComponent(userId)}`),
     updateUser: (userId, payload) => request(baseUrl, `/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: payload }),
     getRoles: (language) => request(baseUrl, `/roles?lang=${encodeURIComponent(language)}`),
