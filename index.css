@@ -1,0 +1,359 @@
+:root{
+      --main-font:'MedievalSharp', serif;
+}
+body {
+    background: linear-gradient(#2B505C, #061826);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+#container {
+    background-color: hsl(0, 0%, 100%);
+    border-radius: 10px;
+    text-align: center;
+    padding: 20px;
+    width: 90%;
+    max-width: 500px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    overflow-y: auto;
+    height: auto;
+    margin: 20px;
+    overflow-y: 100%;
+}
+
+h1 {
+    font-size: 25px;
+    margin-bottom: 20px;
+    color: #333;
+}
+
+input[type="text"] {
+    padding: 10px;
+    margin-bottom: 15px;
+    border-radius: 5px;
+    font-size: 16px;
+    width: 100%;
+    border: 1px solid #ccc;
+}
+
+input[type="number"] {
+    padding: 10px;
+    margin-bottom: 15px;
+    border-radius: 5px;
+    font-size: 16px;
+    width: 50px;
+    border: 1px solid #ccc;
+    text-align: center;
+}
+
+.buttonAdd{
+    padding: 10px 20px;
+    background-color: #28a745;
+    border-radius: 10px;
+    color: white;
+    margin: 5px;
+    font-size: 15px;
+    border: none;
+    box-shadow: 1px 1.5px 3px black;
+    cursor: pointer;
+    max-width: 200px;
+}
+
+.buttonRemove{
+    padding: 10px 20px;
+    background-color: #28a745;
+    border-radius: 10px;
+    color: white;
+    margin: 5px;
+    font-size: 15px;
+    border: none;
+    box-shadow: 1px 1.5px 3px black;
+    cursor: pointer;
+    width: 100;
+    max-width: 200px;
+}
+
+.buttonParametre{
+    padding: 10px 20px;
+    background-color: #28a745;
+    border-radius: 10px;
+    color: white;
+    margin: 5px;
+    font-size: 15px;
+    border: none;
+    box-shadow: 1px 1.5px 3px black;
+    cursor: pointer;
+    width: 100;
+    max-width: 200px;
+}
+
+.buttonRolesC{
+    padding: 10px 20px;
+    background-color: #28a745;
+    border-radius: 10px;
+    color: white;
+    margin: 5px;
+    font-size: 15px;
+    border: none;
+    box-shadow: 1px 1.5px 3px black;
+    cursor: pointer;
+    width: 100;
+    max-width: 200px;
+}
+
+.buttonAdd,.buttonRemove:hover {
+    background-color: #218838;
+}
+
+#resultBUtton {
+    padding: 10px 20px;
+    background-color: #28a745;
+    border-radius: 10px;
+    color: white;
+    margin: 5px;
+    font-size: 15px;
+    border: none;
+    box-shadow: 1px 1.5px 3px black;
+    cursor: pointer;
+    width: 250px !important;
+    max-width: 200px;
+}
+
+#card {
+    background-color: black;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    color: white;
+    cursor: pointer;
+    margin: 20px auto;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%;
+    max-width: 500px;
+    height: 90%;
+    max-height: 100%;
+    z-index: 5;
+    overflow-y: auto;
+}
+
+#closeCard {
+    font-weight: bold;
+    border: none;
+    margin-left: 90%;
+    background-color: transparent;
+    cursor: pointer;
+    color: white;
+    padding: 20px;
+}
+
+#roleDisplay {
+    margin-top: 20px;
+}
+
+#result {
+    margin-top: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    border-radius: 15px;
+    display: grid;
+    grid-template-columns: repeat(1,1fr);
+}
+
+.hidden {
+    display: none !important;
+}
+
+.button2 {
+    background-color: rgb(200, 12, 12);
+    color: white;
+    border-radius: 50%;
+    overflow: hidden;
+    cursor: pointer;
+    width: 60px;
+    height: 55px;
+    margin-left: 65%;
+}
+
+#playerRemoveDiv {
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    border-radius: 15px;
+    padding: 15px;
+    display: grid;
+    grid-template-columns: repeat(1, 1fr);
+    gap: 10px;
+    background-color: #646564;
+}
+
+.playerDiv{
+    display:grid;
+    grid-template-columns: repeat(2,1fr);
+    padding: 10px;
+    border-radius: 30px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    border: 2px solid black;
+    background-color: #d5d5d5;
+    cursor: pointer;
+    font-family:var(--main-font);
+}
+
+#playerparametre {
+    border-radius: 15px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+    text-align: center;
+}
+
+#parametre {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    border-radius: 15px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    padding: 10px;
+    overflow-y: 100%;
+}
+#closeparametre{
+    font-weight: bold;
+    border: none;
+    margin-left: 90%;
+    background-color: transparent;
+    cursor: pointer;
+    color: black;
+    padding: 20px;
+}
+
+#RoleSelection {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 95%; 
+    max-width: 500px;
+    max-height: 90vh;
+    background-color: white;
+    z-index: 1000;
+    overflow-y: auto;
+    padding: 20px;
+    box-sizing: border-box; 
+    border-radius: 10px; 
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+}
+
+.linediv{
+    border: 1px solid black;
+}
+.custom-number-input {
+    display: flex;
+    align-items: center;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    overflow: hidden;
+    width: 100%;
+}
+
+.custom-number-input input[type="number"] {
+    flex: 1;
+    width: 100%;
+    padding: 8px;
+    border: none;
+    text-align: center;
+    font-size: 14px;
+    outline: none;
+}
+
+.custom-number-input input[type="number"]::-webkit-inner-spin-button,
+.custom-number-input input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.custom-number-input input[type="number"] {
+    -moz-appearance: textfield;
+}
+
+.custom-number-input .arrow {
+    border: none;
+    padding: 8px 12px;
+    cursor: pointer;
+    background-color: transparent;
+}
+
+.custom-number-input .arrow:hover {
+    background-color: transparent;
+}
+
+.custom-number-input .arrow:active {
+    background-color: transparent;
+}
+.tooltip {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.tooltip .tooltiptext {
+  visibility: hidden;
+  width: 140px;
+  background-color: black;
+  color: #fff;
+  text-align: center;
+  border-radius: 6px;
+  padding: 5px;
+  position: absolute;
+  z-index: 1;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.tooltip:hover .tooltiptext {
+  visibility: visible;
+  opacity: 1;
+}
+
+
+/* Media Queries for Mobile Devices */
+@media (max-width: 480px) {
+    #container {
+        width: 100%;
+        padding: 10px;
+        margin: 10px;
+    }
+
+    h1 {
+        font-size: 20px;
+    }
+
+    #playerRemoveDiv {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    #parametre {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    #card{
+        #card {
+            width: 100%;
+            max-width: 100%;
+            height: 80%;
+            max-height: 80%;
+        }
+    }
+
+    input[type="number"] {
+        width: 100%;
+    }
+}
