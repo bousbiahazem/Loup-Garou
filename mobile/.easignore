@@ -1,0 +1,12 @@
+node_modules
+.expo
+.git
+*.log
+expo.log
+expo.err.log
+android
+ios
+web-build
+dist
+coverage
+.DS_Store
