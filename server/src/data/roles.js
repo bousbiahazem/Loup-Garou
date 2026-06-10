@@ -566,7 +566,7 @@ export const ROLE_CATALOG = [
     descriptions: {
       en: "Custom table role from the old app. Narrator defines the exact ability.",
       fr: "Role personnalise de l'ancienne app. Le narrateur definit son pouvoir exact.",
-      ar: "دور custom من النسخة القديمة. الراوي يحدد قوته بالضبط."
+      ar: "دور مخصص من النسخة القديمة. الراوي يحدد قوته بالضبط."
     }
   },
   {
@@ -581,7 +581,7 @@ export const ROLE_CATALOG = [
     descriptions: {
       en: "Custom neutral role for your table. Narrator decides the win condition.",
       fr: "Role neutre personnalise pour votre table. Le narrateur decide sa condition de victoire.",
-      ar: "دور محايد custom للمجموعة. الراوي يحدد كيفاش يربح."
+      ar: "دور محايد مخصص للمجموعة. الراوي يحدد كيفاش يربح."
     }
   }
 ];

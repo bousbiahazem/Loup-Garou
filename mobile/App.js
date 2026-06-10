@@ -1439,7 +1439,7 @@ function OfflineReveal({ game, isArabic, roles, setGame, t }) {
 }
 
 function OfflineNarratorPanel({ game, isArabic, roles, setGame, t, onClose, onConfirm }) {
-  const [showPlayerList, setShowPlayerList] = useState(true);
+  const [showPlayerList, setShowPlayerList] = useState(false);
   const nightOrder = getOfflineNightOrder(game.players, roles);
   const currentRoleKey = nightOrder[game.nightStepIndex];
   const wolfRole = roles.find((role) => role.faction === "wolves");
@@ -1511,9 +1511,6 @@ function OfflineNarratorPanel({ game, isArabic, roles, setGame, t, onClose, onCo
                 </View>
               </View>
               <Text style={[styles.muted, isArabic && styles.rtlText]}>{currentRole.description}</Text>
-              {currentRolePlayers.map((player) => (
-                <Text key={player.id} style={[styles.playerName, isArabic && styles.rtlText]}>{player.name}</Text>
-              ))}
               <PrimaryButton label={t("nextRole")} onPress={nextNightRole} />
             </View>
           ) : (
