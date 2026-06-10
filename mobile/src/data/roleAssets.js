@@ -8,6 +8,7 @@ export const ROLE_IMAGES = {
   mayor: require("../../assets/roles/Mayor.jpg"),
   seer: require("../../assets/roles/Voyante.jpg"),
   werewolf: require("../../assets/roles/Werewolf.jpg"),
+  werewolf_background: require("../../assets/roles/wearwolf-background.png"),
   white_wolf: require("../../assets/roles/White Wolf.jpg"),
   witch: require("../../assets/roles/Witch.jpg")
 };

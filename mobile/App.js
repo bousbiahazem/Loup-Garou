@@ -4,6 +4,8 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
+  PanResponder,
   Platform,
   Pressable,
   SafeAreaView,
@@ -15,8 +17,13 @@ import {
   View
 } from "react-native";
 import { createApi, createRoomSocket, DEFAULT_API_URL } from "./src/api/client";
+import { AppHeader } from "./src/components/AppHeader";
+import { ConfirmDialog } from "./src/components/ConfirmDialog";
+import { OFFLINE_GAME_KEY } from "./src/constants/offline";
 import { FACTION_COLORS, ROLE_IMAGES } from "./src/data/roleAssets";
 import { LANGUAGES, translate } from "./src/i18n/translations";
+import { HomeScreen } from "./src/screens/HomeScreen";
+import { buildOfflineDeck, createEmptyOfflineGame, createLocalId, getOfflineNightOrder, isWolfRoleKey } from "./src/utils/offlineGame";
 
 const PROFILE_KEY = "loup-garou.profile";
 const AVATAR_COLORS = ["#c99455", "#8b704f", "#7c8456", "#8f4232", "#b58a5a", "#6f5b45"];
@@ -32,7 +39,10 @@ export default function App() {
   const [avatarKey, setAvatarKey] = useState(AVATAR_KEYS[0]);
   const [profile, setProfile] = useState(null);
   const [editingProfile, setEditingProfile] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("home");
+  const [hubMode, setHubMode] = useState("menu");
+  const [offlineGame, setOfflineGame] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
   const [roles, setRoles] = useState([]);
   const [room, setRoom] = useState(null);
   const [roomMode, setRoomMode] = useState("room");
@@ -41,6 +51,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const socketRef = useRef(null);
+  const scrollRef = useRef(null);
 
   const api = useMemo(() => createApi(apiUrl), [apiUrl]);
   const isArabic = language === "ar";
@@ -56,6 +67,7 @@ export default function App() {
     async function boot() {
       try {
         const storedProfile = await AsyncStorage.getItem(PROFILE_KEY);
+        const storedOfflineGame = await AsyncStorage.getItem(OFFLINE_GAME_KEY);
 
         if (storedProfile) {
           const parsedProfile = JSON.parse(storedProfile);
@@ -64,6 +76,10 @@ export default function App() {
           setLanguage(parsedProfile.language || "en");
           setAvatarColor(parsedProfile.avatarColor || AVATAR_COLORS[0]);
           setAvatarKey(parsedProfile.avatarKey || AVATAR_KEYS[0]);
+        }
+
+        if (storedOfflineGame) {
+          setOfflineGame(JSON.parse(storedOfflineGame));
         }
       } catch (storageError) {
         setError(storageError.message);
@@ -78,6 +94,18 @@ export default function App() {
   useEffect(() => {
     loadRoles(language);
   }, [api, language]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    if (offlineGame) {
+      AsyncStorage.setItem(OFFLINE_GAME_KEY, JSON.stringify(offlineGame)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(OFFLINE_GAME_KEY).catch(() => {});
+    }
+  }, [offlineGame, loading]);
 
   useEffect(() => {
     return () => {
@@ -115,6 +143,8 @@ export default function App() {
     setAvatarKey(nextProfile.avatarKey || AVATAR_KEYS[0]);
     setPassword("");
     setAuthMode("login");
+    setActiveTab("home");
+    setHubMode("menu");
     await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
     return nextProfile;
   }
@@ -148,7 +178,9 @@ export default function App() {
     setJoinCode("");
     setPassword("");
     setEditingProfile(false);
-    setSettingsOpen(false);
+    setActiveTab("home");
+    setHubMode("menu");
+    setOfflineGame(null);
     setAuthMode("login");
   }
 
@@ -177,25 +209,30 @@ export default function App() {
       if (!profile) {
         if (authMode === "login") {
           response = await api.loginUser({ displayName, password });
-        } else {
-          response = await api.createUser(profilePayload(null, true));
+          await persistProfile(response.user);
+          return;
         }
-      } else {
-        try {
-          response = await api.updateUser(profile._id, profilePayload(null, true));
-        } catch (error) {
-          if (shouldRequireLogin(error)) {
-            await clearLocalProfile();
-            throw new Error("PROFILE_LOGIN_REQUIRED");
-          }
 
-          throw error;
+        await api.createUser(profilePayload(null, true));
+        setPassword("");
+        setAuthMode("login");
+        return;
+      }
+
+      try {
+        response = await api.updateUser(profile._id, profilePayload(null, true));
+      } catch (error) {
+        if (shouldRequireLogin(error)) {
+          await clearLocalProfile();
+          throw new Error("PROFILE_LOGIN_REQUIRED");
         }
+
+        throw error;
       }
 
       await persistProfile(response.user);
       setEditingProfile(false);
-      setSettingsOpen(false);
+      setActiveTab("home");
     });
   }
 
@@ -205,6 +242,8 @@ export default function App() {
       const response = await api.createRoom(safeProfile._id);
       setRoom(response.room);
       setRoomMode("room");
+      setActiveTab("home");
+      setHubMode("menu");
       watchRoom(response.room.code, safeProfile._id);
     });
   }
@@ -216,6 +255,8 @@ export default function App() {
       setRoom(response.room);
       setRoomMode("room");
       setJoinCode("");
+      setActiveTab("home");
+      setHubMode("menu");
       watchRoom(response.room.code, safeProfile._id);
     });
   }
@@ -228,22 +269,16 @@ export default function App() {
     socket.on("room:error", (payload) => setError(t(`error_${payload.error}`)));
   }
 
-  async function updateRoleCount(roleKey, delta) {
-    if (!room || !isHost) {
+  async function saveRoleSetup(roleCounts) {
+    if (!room || !isNarrator) {
       return;
     }
 
-    const currentCount = Number(room.roleCounts?.[roleKey] || 0);
-    const role = roles.find((candidate) => candidate.key === roleKey);
-    const nextCount = Math.max(0, Math.min(role?.max || 50, currentCount + delta));
-
     await run(async () => {
       const safeProfile = await ensureProfile();
-      const response = await api.updateRoles(room.code, safeProfile._id, {
-        ...room.roleCounts,
-        [roleKey]: nextCount
-      });
+      const response = await api.updateRoles(room.code, safeProfile._id, roleCounts);
       setRoom(response.room);
+      setRoomMode("room");
     });
   }
 
@@ -276,8 +311,8 @@ export default function App() {
       const safeProfile = await ensureProfile();
       const response = await api.restartGame(room.code, safeProfile._id);
       setRoom(response.room);
-      setRoomMode("room");
-      setSettingsOpen(false);
+      setRoomMode("roles");
+      setActiveTab("home");
     });
   }
 
@@ -341,7 +376,7 @@ export default function App() {
       setRoom(null);
       setRoomMode("room");
       setJoinCode("");
-      setSettingsOpen(false);
+      setHubMode("menu");
       setError("");
     });
   }
@@ -371,18 +406,61 @@ export default function App() {
     setAvatarColor(AVATAR_COLORS[0]);
     setAvatarKey(AVATAR_KEYS[0]);
     setEditingProfile(false);
-    setSettingsOpen(false);
+    setActiveTab("home");
+    setHubMode("menu");
+    setOfflineGame(null);
     setError("");
   }
 
-  function openEditProfile() {
+  function openProfilePage() {
     setPassword("");
-    setEditingProfile(true);
-    setSettingsOpen(false);
+    setEditingProfile(false);
+    setActiveTab("profile");
+    setHubMode("menu");
+    setError("");
   }
 
-  function openSettings() {
-    setSettingsOpen((current) => !current);
+  function handleBack() {
+    setError("");
+
+    if (editingProfile || activeTab === "profile") {
+      setEditingProfile(false);
+      setActiveTab("home");
+      return;
+    }
+
+    if (hubMode === "join") {
+      setHubMode("menu");
+      return;
+    }
+
+    if (roomMode === "roles") {
+      setRoomMode("room");
+      return;
+    }
+
+    if (offlineGame?.step === "roles") {
+      setOfflineGame((current) => current ? { ...current, step: "players" } : current);
+      return;
+    }
+
+    if (offlineGame?.step === "reveal") {
+      setOfflineGame((current) => current ? { ...current, step: "roles", revealVisible: false } : current);
+    }
+  }
+
+  function askConfirm(title, message, onConfirm) {
+    setConfirmDialog({ title, message, onConfirm });
+  }
+
+  function closeConfirm() {
+    setConfirmDialog(null);
+  }
+
+  function runConfirmedAction() {
+    const action = confirmDialog?.onConfirm;
+    setConfirmDialog(null);
+    action?.();
   }
 
   if (loading) {
@@ -396,123 +474,136 @@ export default function App() {
     );
   }
 
+  const showingProfile = (!profile && !offlineGame) || editingProfile || activeTab === "profile";
+  const isHomeScreen = Boolean(profile && !showingProfile && !offlineGame && !room);
+  const canGoBack = Boolean(
+    (profile && (
+      editingProfile ||
+      activeTab === "profile" ||
+      hubMode === "join" ||
+      roomMode === "roles"
+    )) ||
+    offlineGame?.step === "roles"
+  );
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          <Header
-            showSettings={Boolean(profile)}
-            title={t("appTitle")}
-            subtitle={room ? `${t(room.phase)} ${room.dayNumber || ""}`.trim() : undefined}
-            onSettingsPress={openSettings}
-          />
-
-          {settingsOpen && profile ? (
-            <SettingsMenu
-              canReset={Boolean(room && room.status === "running" && isNarrator)}
-              t={t}
-              onEditProfile={openEditProfile}
-              onLogOut={logOut}
-              onResetGame={restartGame}
+        <View style={styles.appShell}>
+          <View style={styles.fixedHeader}>
+            <AppHeader
+              canGoBack={canGoBack}
+              showProfile={Boolean(isHomeScreen && hubMode === "menu")}
+              title={t("appTitle")}
+              subtitle={room ? [t(room.phase), room.dayNumber || ""].join(" ").trim() : offlineGame ? t("offlineGame") : undefined}
+              onBackPress={handleBack}
+              onProfilePress={openProfilePage}
             />
+          </View>
+          <ScrollView ref={scrollRef} scrollEnabled={!offlineGame?.isReordering} contentContainerStyle={[styles.scrollContent, isHomeScreen && styles.homeScrollContent]} keyboardShouldPersistTaps="handled">
+            {showingProfile ? (
+              <ProfileScreen
+                authMode={authMode}
+                avatarColor={avatarColor}
+                avatarKey={avatarKey}
+                displayName={displayName}
+                hasProfile={Boolean(profile)}
+                isArabic={isArabic}
+                language={language}
+                password={password}
+                setAuthMode={setAuthMode}
+                setAvatarColor={setAvatarColor}
+                setAvatarKey={setAvatarKey}
+                setDisplayName={setDisplayName}
+                setLanguage={setLanguage}
+                setPassword={setPassword}
+                t={t}
+                onCancel={() => {
+                  setEditingProfile(false);
+                  setActiveTab("home");
+                }}
+                onLogOut={logOut}
+                onOffline={() => {
+                  setActiveTab("home");
+                  setOfflineGame((current) => current || createEmptyOfflineGame());
+                }}
+                onSubmit={saveProfile}
+              />
+            ) : offlineGame ? (
+              <OfflineGameScreen
+                isArabic={isArabic}
+                offlineGame={offlineGame}
+                roles={roles}
+                setOfflineGame={setOfflineGame}
+                t={t}
+                onClose={() => setOfflineGame(null)}
+                onConfirm={askConfirm}
+              />
+            ) : room ? (
+              <RoomScreen
+                activePlayerCount={activePlayerCount}
+                busy={busy}
+                isArabic={isArabic}
+                isHost={isHost}
+                isNarrator={isNarrator}
+                me={me}
+                profile={profile}
+                roleCount={selectedRoleCount}
+                roomMode={roomMode}
+                roles={roles}
+                room={room}
+                t={t}
+                onAdvanceNight={advanceNight}
+                onCastVote={castVote}
+                onChooseNarrator={chooseNarrator}
+                onCloseRoleSetup={() => setRoomMode("room")}
+                onKickPlayer={kickPlayer}
+                onLeave={leaveRoom}
+                onLife={setLife}
+                onOpenVote={openVote}
+                onPhase={setPhase}
+                onResolveVote={resolveVote}
+                onSaveRoles={saveRoleSetup}
+                onOpenRoleSetup={() => setRoomMode("roles")}
+                onRestart={restartGame}
+                onStart={startGame}
+              />
+            ) : (
+              <HomeScreen
+                hubMode={hubMode}
+                isArabic={isArabic}
+                joinCode={joinCode}
+                setHubMode={setHubMode}
+                setJoinCode={setJoinCode}
+                t={t}
+                onCreate={createRoom}
+                onJoin={joinRoom}
+                onOffline={() => setOfflineGame((current) => current || createEmptyOfflineGame())}
+              />
+            )}
+
+            {error ? <Text style={[styles.error, isArabic && styles.rtlText]}>{error}</Text> : null}
+            {busy ? <ActivityIndicator color={theme.gold} style={styles.loader} /> : null}
+          </ScrollView>
+          {offlineGame?.step === "roles" ? (
+            <Pressable onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })} style={({ pressed }) => [styles.fixedScrollTopButton, pressed && styles.pressed]}>
+              <Text style={styles.scrollTopText}>{"\u2191"}</Text>
+            </Pressable>
           ) : null}
-
-          {!profile || editingProfile ? (
-            <ProfileScreen
-              authMode={authMode}
-              avatarColor={avatarColor}
-              avatarKey={avatarKey}
-              displayName={displayName}
-              hasProfile={Boolean(profile)}
-              isArabic={isArabic}
-              language={language}
-              password={password}
-              setAuthMode={setAuthMode}
-              setAvatarColor={setAvatarColor}
-              setAvatarKey={setAvatarKey}
-              setDisplayName={setDisplayName}
-              setLanguage={setLanguage}
-              setPassword={setPassword}
-              t={t}
-              onCancel={() => setEditingProfile(false)}
-              onSubmit={saveProfile}
-            />
-          ) : room ? (
-            <RoomScreen
-              activePlayerCount={activePlayerCount}
-              busy={busy}
-              isArabic={isArabic}
-              isHost={isHost}
-              isNarrator={isNarrator}
-              me={me}
-              profile={profile}
-              roleCount={selectedRoleCount}
-              roomMode={roomMode}
-              roles={roles}
-              room={room}
-              t={t}
-              onAdvanceNight={advanceNight}
-              onCastVote={castVote}
-              onChooseNarrator={chooseNarrator}
-              onCloseRoleSetup={() => setRoomMode("room")}
-              onKickPlayer={kickPlayer}
-              onLeave={leaveRoom}
-              onLife={setLife}
-              onOpenVote={openVote}
-              onPhase={setPhase}
-              onResolveVote={resolveVote}
-              onRoleCount={updateRoleCount}
-              onOpenRoleSetup={() => setRoomMode("roles")}
-              onRestart={restartGame}
-              onStart={startGame}
-            />
-          ) : (
-            <HubScreen
-              isArabic={isArabic}
-              joinCode={joinCode}
-              profile={profile}
-              setJoinCode={setJoinCode}
-              t={t}
-              onCreate={createRoom}
-              onEditProfile={openEditProfile}
-              onJoin={joinRoom}
-            />
-          )}
-
-          {error ? <Text style={[styles.error, isArabic && styles.rtlText]}>{error}</Text> : null}
-          {busy ? <ActivityIndicator color={theme.gold} style={styles.loader} /> : null}
-        </ScrollView>
+          <ConfirmDialog
+            cancelLabel={t("cancel")}
+            confirmLabel={t("confirmAction")}
+            dialog={confirmDialog}
+            isArabic={isArabic}
+            onCancel={closeConfirm}
+            onConfirm={runConfirmedAction}
+          />
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
-}
 
-function Header({ showSettings, title, subtitle, onSettingsPress }) {
-  return (
-    <View style={styles.header}>
-      <View style={styles.moon} />
-      <View style={styles.headerText}>
-        <Text style={styles.appTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
-      </View>
-      {showSettings ? (
-        <Pressable onPress={onSettingsPress} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}>
-          <Text style={styles.settingsButtonText}>{"\u2699"}</Text>
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
-function SettingsMenu({ canReset, t, onEditProfile, onLogOut, onResetGame }) {
-  return (
-    <View style={styles.settingsMenu}>
-      <SecondaryButton compact label={t("editProfile")} onPress={onEditProfile} />
-      {canReset ? <SecondaryButton compact label={t("resetGame")} onPress={onResetGame} /> : null}
-      <SecondaryButton compact label={t("logOut")} onPress={onLogOut} />
-    </View>
-  );
 }
 
 function ProfileScreen({
@@ -532,6 +623,8 @@ function ProfileScreen({
   setPassword,
   t,
   onCancel,
+  onLogOut,
+  onOffline,
   onSubmit
 }) {
   const isLogin = !hasProfile && authMode === "login";
@@ -599,35 +692,8 @@ function ProfileScreen({
         </>
       ) : null}
       <PrimaryButton label={isLogin ? t("login") : hasProfile ? t("saveProfile") : t("createAccount")} onPress={onSubmit} />
-      {hasProfile ? <SecondaryButton label={t("cancel")} onPress={onCancel} /> : null}
-    </View>
-  );
-}
-
-function HubScreen({ isArabic, joinCode, profile, setJoinCode, t, onCreate, onEditProfile, onJoin }) {
-  return (
-    <View style={styles.panel}>
-      <View style={[styles.profileRow, isArabic && styles.reverseRow]}>
-        <Avatar name={profile.displayName} color={profile.avatarColor} avatarKey={profile.avatarKey} />
-        <View style={styles.flex}>
-          <Text style={[styles.title, isArabic && styles.rtlText]}>{t("roomHub")}</Text>
-          <Text style={[styles.muted, isArabic && styles.rtlText]}>{profile.displayName}</Text>
-        </View>
-      </View>
-      <SecondaryButton label={t("editProfile")} onPress={onEditProfile} />
-      <PrimaryButton label={t("createRoom")} onPress={onCreate} />
-      <Field label={t("roomCode")} isArabic={isArabic}>
-        <TextInput
-          autoCapitalize="characters"
-          maxLength={6}
-          placeholder={t("roomCodePlaceholder")}
-          placeholderTextColor={theme.muted}
-          value={joinCode}
-          onChangeText={setJoinCode}
-          style={styles.input}
-        />
-      </Field>
-      <SecondaryButton label={t("joinRoom")} onPress={onJoin} />
+      {!hasProfile ? <SecondaryButton label={t("playOffline")} onPress={onOffline} /> : null}
+      {hasProfile ? <SecondaryButton label={t("logOut")} onPress={onLogOut} /> : null}
     </View>
   );
 }
@@ -655,7 +721,7 @@ function RoomScreen({
   onOpenVote,
   onPhase,
   onResolveVote,
-  onRoleCount,
+  onSaveRoles,
   onOpenRoleSetup,
   onRestart,
   onStart
@@ -672,7 +738,7 @@ function RoomScreen({
         room={room}
         t={t}
         onClose={onCloseRoleSetup}
-        onRoleCount={onRoleCount}
+        onSaveRoles={onSaveRoles}
       />
     );
   }
@@ -783,8 +849,29 @@ function PlayersPanel({ canManagePlayers, isArabic, isNarrator, players, room, t
   );
 }
 
-function RoleSetupPage({ activePlayerCount, isArabic, roleCount, roles, room, t, onClose, onRoleCount }) {
+function RoleSetupPage({ activePlayerCount, isArabic, roleCount, roles, room, t, onClose, onSaveRoles }) {
   const [selectedRole, setSelectedRole] = useState(null);
+  const [draftCounts, setDraftCounts] = useState(() => ({ ...(room.roleCounts || {}) }));
+
+  useEffect(() => {
+    setDraftCounts({ ...(room.roleCounts || {}) });
+  }, [room.code, room.updatedAt]);
+
+  const draftTotal = Object.values(draftCounts).reduce((total, count) => total + Number(count || 0), 0);
+
+  function changeCount(role, delta) {
+    setDraftCounts((current) => {
+      const currentCount = Number(current[role.key] || 0);
+      const nextCount = Math.max(0, Math.min(role.max || 50, currentCount + delta));
+      const nextTotal = Object.entries(current).reduce((total, [key, value]) => total + (key === role.key ? 0 : Number(value || 0)), 0) + nextCount;
+
+      if (nextTotal > activePlayerCount) {
+        return current;
+      }
+
+      return { ...current, [role.key]: nextCount };
+    });
+  }
 
   return (
     <View style={styles.stack}>
@@ -793,51 +880,53 @@ function RoleSetupPage({ activePlayerCount, isArabic, roleCount, roles, room, t,
           <Text style={[styles.label, isArabic && styles.rtlText]}>{t("roleSetup")}</Text>
           <Text style={styles.roomCode}>{room.code}</Text>
         </View>
-        <SecondaryButton compact label={t("closeRoleSetup")} onPress={onClose} />
       </View>
       <View style={styles.panel}>
-      <View style={[styles.roleHeader, isArabic && styles.reverseRow]}>
-        <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{t("roleSetup")}</Text>
-        <Text style={styles.countPill}>
-          {t("deckTotal")}: {roleCount}/{activePlayerCount}
-        </Text>
-      </View>
-      <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("autoVillagers")}</Text>
-      <View style={styles.roleGrid}>
-        {roles.map((role) => (
-          <RoleCountCard
-            key={role.key}
-            count={Number(room.roleCounts?.[role.key] || 0)}
-            disabled={false}
-            isArabic={isArabic}
-            role={role}
-            t={t}
-            onMinus={() => onRoleCount(role.key, -1)}
-            onPlus={() => onRoleCount(role.key, 1)}
-            onRolePress={() => setSelectedRole(role)}
-          />
-        ))}
-      </View>
-      {selectedRole ? (
-        <View style={styles.descriptionPanel}>
-          <RoleAvatar role={selectedRole} size={78} />
-          <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{selectedRole.name}</Text>
-          <Text style={[styles.muted, isArabic && styles.rtlText]}>{selectedRole.description}</Text>
-          <SecondaryButton label={t("cancel")} onPress={() => setSelectedRole(null)} />
+        <View style={[styles.roleHeader, isArabic && styles.reverseRow]}>
+          <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{t("roleSetup")}</Text>
+          <Text style={styles.countPill}>
+            {t("deckTotal")}: {draftTotal}/{activePlayerCount}
+          </Text>
         </View>
-      ) : null}
+        <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("autoVillagers")}</Text>
+        <View style={styles.roleGrid}>
+          {roles.map((role) => {
+            const count = Number(draftCounts?.[role.key] || 0);
+            return (
+              <RoleCountCard
+                key={role.key}
+                count={count}
+                disabled={false}
+                plusDisabled={count >= role.max || draftTotal >= activePlayerCount}
+                isArabic={isArabic}
+                role={role}
+                t={t}
+                onMinus={() => changeCount(role, -1)}
+                onPlus={() => changeCount(role, 1)}
+                onRolePress={() => setSelectedRole(role)}
+              />
+            );
+          })}
+        </View>
+        <PrimaryButton label={t("saveRoles")} onPress={() => onSaveRoles(draftCounts)} />
+        {selectedRole ? (
+          <View style={styles.descriptionPanel}>
+            <RoleAvatar role={selectedRole} size={78} />
+            <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{selectedRole.name}</Text>
+            <Text style={[styles.muted, isArabic && styles.rtlText]}>{selectedRole.description}</Text>
+            <SecondaryButton label={t("cancel")} onPress={() => setSelectedRole(null)} />
+          </View>
+        ) : null}
       </View>
     </View>
   );
 }
 
-function RoleCountCard({ count, disabled, isArabic, role, t, onMinus, onPlus, onRolePress }) {
+function RoleCountCard({ count, disabled, plusDisabled, isArabic, role, t, onMinus, onPlus, onRolePress }) {
   return (
-    <View style={styles.roleCountCard}>
+    <Pressable onPress={onRolePress} style={({ pressed }) => [styles.roleCountCard, pressed && styles.pressed]}>
       <View style={[styles.roleMiniHeader, isArabic && styles.reverseRow]}>
-        <Pressable onPress={onRolePress}>
-          <RoleAvatar role={role} size={42} />
-        </Pressable>
+        <RoleAvatar role={role} size={42} />
         <View style={styles.roleMiniText}>
           <Text style={[styles.roleName, isArabic && styles.rtlText]} numberOfLines={2}>{role.name}</Text>
           <Text style={[styles.smallMuted, isArabic && styles.rtlText]}>{t(role.faction)}</Text>
@@ -846,9 +935,9 @@ function RoleCountCard({ count, disabled, isArabic, role, t, onMinus, onPlus, on
       <View style={styles.stepper}>
         <RoundButton disabled={disabled} label="-" onPress={onMinus} />
         <Text style={styles.stepperValue}>{count}</Text>
-        <RoundButton disabled={disabled || count >= role.max} label="+" onPress={onPlus} />
+        <RoundButton disabled={disabled || plusDisabled} label="+" onPress={onPlus} />
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -890,7 +979,6 @@ function NarratorPanel({ isArabic, players, roles, room, t, onAdvanceNight, onLi
         ) : (
           <NarratorVotePanel room={room} t={t} onOpenVote={onOpenVote} onResolveVote={onResolveVote} />
         )}
-        <SecondaryButton label={t("restartGame")} onPress={onRestart} />
       </View>
 
       <View style={styles.panel}>
@@ -1051,6 +1139,470 @@ function PlayerVotePanel({ isArabic, players, room, t, viewerPlayer, onCastVote 
   );
 }
 
+function OfflineGameScreen({ isArabic, offlineGame, roles, setOfflineGame, t, onClose, onConfirm }) {
+  if (offlineGame.step === "roles") {
+    return <OfflineRolesPage game={offlineGame} isArabic={isArabic} roles={roles} setGame={setOfflineGame} t={t} />;
+  }
+
+  if (offlineGame.step === "reveal") {
+    return <OfflineReveal game={offlineGame} isArabic={isArabic} roles={roles} setGame={setOfflineGame} t={t} />;
+  }
+
+  if (offlineGame.step === "narrator") {
+    return <OfflineNarratorPanel game={offlineGame} isArabic={isArabic} roles={roles} setGame={setOfflineGame} t={t} onClose={onClose} onConfirm={onConfirm} />;
+  }
+
+  return <OfflinePlayersPage game={offlineGame} isArabic={isArabic} roles={roles} setGame={setOfflineGame} t={t} onClose={onClose} onConfirm={onConfirm} />;
+}
+
+function OfflinePlayersPage({ game, isArabic, roles, setGame, t, onClose, onConfirm }) {
+  const [playerName, setPlayerName] = useState("");
+  const [draggingId, setDraggingId] = useState(null);
+  const dragRef = useRef(null);
+  const visiblePlayers = game.players.filter((player) => player.name.trim());
+  const roleTotal = Object.values(game.roleCounts || {}).reduce((total, count) => total + Number(count || 0), 0);
+
+  function addPlayer() {
+    const name = playerName.trim();
+
+    if (!name) {
+      return;
+    }
+
+    setGame((current) => ({
+      ...current,
+      players: [...current.players.filter((player) => player.name.trim()), { id: createLocalId(), name, isAlive: true, marked: false }]
+    }));
+    setPlayerName("");
+  }
+
+  function removePlayer(id) {
+    setGame((current) => ({
+      ...current,
+      players: current.players.filter((player) => player.id !== id)
+    }));
+  }
+
+  function movePlayerById(playerId, toVisibleIndex) {
+    setGame((current) => {
+      const players = current.players.filter((player) => player.name.trim());
+      const fromIndex = players.findIndex((player) => player.id === playerId);
+      const targetIndex = Math.max(0, Math.min(players.length - 1, toVisibleIndex));
+
+      if (fromIndex < 0 || fromIndex === targetIndex) {
+        return current;
+      }
+
+      const [moved] = players.splice(fromIndex, 1);
+      players.splice(targetIndex, 0, moved);
+      return { ...current, players };
+    });
+  }
+
+  function beginDrag(player, index) {
+    dragRef.current = { id: player.id, originIndex: index, currentIndex: index };
+    setDraggingId(player.id);
+    setGame((current) => ({ ...current, isReordering: true }));
+  }
+
+  function dragMove(player, gestureState) {
+    const drag = dragRef.current;
+
+    if (!drag || drag.id !== player.id) {
+      return;
+    }
+
+    const rowHeight = 58;
+    const steps = Math.trunc(gestureState.dy / rowHeight);
+
+    if (steps === 0) {
+      return;
+    }
+
+    const targetIndex = Math.max(0, Math.min(visiblePlayers.length - 1, drag.originIndex + steps));
+
+    if (targetIndex !== drag.currentIndex) {
+      movePlayerById(player.id, targetIndex);
+      drag.currentIndex = targetIndex;
+    }
+  }
+
+  function endDrag() {
+    dragRef.current = null;
+    setDraggingId(null);
+    setGame((current) => ({ ...current, isReordering: false }));
+  }
+
+  function startReveal() {
+    const cleanPlayers = visiblePlayers.map((player, index) => ({
+      ...player,
+      id: player.id || "offline-" + index,
+      name: player.name.trim(),
+      isAlive: true,
+      marked: false
+    }));
+
+    if (cleanPlayers.length < 3 || roleTotal > cleanPlayers.length) {
+      return;
+    }
+
+    const deck = buildOfflineDeck(game.roleCounts, cleanPlayers.length);
+    setGame({
+      ...game,
+      step: "reveal",
+      players: cleanPlayers.map((player, index) => ({ ...player, roleKey: deck[index] })),
+      revealIndex: 0,
+      revealVisible: false,
+      phase: "night",
+      nightStepIndex: 0,
+      isReordering: false
+    });
+  }
+
+  return (
+    <View style={styles.stack}>
+      <View style={styles.panel}>
+        <View style={[styles.roleHeader, isArabic && styles.reverseRow]}>
+          <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{t("offlineSetup")}</Text>
+          <Text style={styles.countPill}>{visiblePlayers.length}</Text>
+        </View>
+        <View style={[styles.playerInputRow, isArabic && styles.reverseRow]}>
+          <TextInput
+            placeholder={t("playerName")}
+            placeholderTextColor={theme.muted}
+            value={playerName}
+            onChangeText={setPlayerName}
+            onSubmitEditing={addPlayer}
+            style={[styles.input, styles.flexInput, isArabic && styles.rtlInput]}
+          />
+          <SmallButton label={t("addPlayer")} onPress={addPlayer} />
+        </View>
+        <View style={styles.offlinePlayerList}>
+          {visiblePlayers.map((player, index) => (
+            <OfflinePlayerOrderItem
+              key={player.id}
+              index={index}
+              isArabic={isArabic}
+              isDragging={draggingId === player.id}
+              player={player}
+              onDragEnd={endDrag}
+              onDragMove={dragMove}
+              onDragStart={beginDrag}
+              onRemove={removePlayer}
+            />
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.homeActions}>
+        <SecondaryButton label={t("rolesButton")} onPress={() => setGame((current) => ({ ...current, step: "roles" }))} />
+        <PrimaryButton disabled={visiblePlayers.length < 3 || roleTotal > visiblePlayers.length} label={t("startGame")} onPress={startReveal} />
+        <SecondaryButton label={t("endGame")} onPress={() => onConfirm(t("confirmTitle"), t("confirmEnd"), onClose)} />
+      </View>
+    </View>
+  );
+}
+
+function OfflinePlayerOrderItem({ index, isArabic, isDragging, player, onDragEnd, onDragMove, onDragStart, onRemove }) {
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => onDragStart(player, index),
+    onPanResponderMove: (_event, gestureState) => onDragMove(player, gestureState),
+    onPanResponderRelease: onDragEnd,
+    onPanResponderTerminate: onDragEnd
+  }), [index, onDragEnd, onDragMove, onDragStart, player]);
+
+  return (
+    <View style={[styles.offlinePlayerOrderRow, isDragging && styles.draggingRow, isArabic && styles.reverseRow]}>
+      <View {...panResponder.panHandlers} style={styles.playerNameDragHandle}>
+        <Text style={[styles.playerName, isArabic && styles.rtlText]}>{index + 1}. {player.name}</Text>
+      </View>
+      <SmallButton danger label="X" onPress={() => onRemove(player.id)} />
+    </View>
+  );
+}
+
+function OfflineRolesPage({ game, isArabic, roles, setGame, t }) {
+  const [selectedRole, setSelectedRole] = useState(null);
+  const activePlayerCount = game.players.filter((player) => player.name.trim()).length;
+  const roleTotal = Object.values(game.roleCounts || {}).reduce((total, count) => total + Number(count || 0), 0);
+
+  function changeRoleCount(role, delta) {
+    setGame((current) => {
+      const currentCount = Number(current.roleCounts?.[role.key] || 0);
+      const nextCount = Math.max(0, Math.min(role.max || 50, currentCount + delta));
+      const nextTotal = Object.entries(current.roleCounts || {}).reduce((total, [key, value]) => total + (key === role.key ? 0 : Number(value || 0)), 0) + nextCount;
+
+      if (nextTotal > Math.max(activePlayerCount, 1)) {
+        return current;
+      }
+
+      return { ...current, roleCounts: { ...current.roleCounts, [role.key]: nextCount } };
+    });
+  }
+
+  return (
+    <View style={styles.stack}>
+      <View style={styles.roomCodeBand}>
+        <View>
+          <Text style={[styles.label, isArabic && styles.rtlText]}>{t("roleSetup")}</Text>
+          <Text style={styles.roomCode}>{roleTotal}/{activePlayerCount || 0}</Text>
+        </View>
+      </View>
+      <View style={styles.panel}>
+        <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("autoVillagers")}</Text>
+        <View style={styles.roleGrid}>
+          {roles.map((role) => {
+            const count = Number(game.roleCounts?.[role.key] || 0);
+            return (
+              <RoleCountCard
+                key={role.key}
+                count={count}
+                disabled={false}
+                plusDisabled={count >= role.max || roleTotal >= activePlayerCount}
+                isArabic={isArabic}
+                role={role}
+                t={t}
+                onMinus={() => changeRoleCount(role, -1)}
+                onPlus={() => changeRoleCount(role, 1)}
+                onRolePress={() => setSelectedRole(role)}
+              />
+            );
+          })}
+        </View>
+      </View>
+      <RoleDescriptionModal isArabic={isArabic} role={selectedRole} t={t} onClose={() => setSelectedRole(null)} />
+    </View>
+  );
+}
+
+function RoleDescriptionModal({ isArabic, role, t, onClose }) {
+  return (
+    <Modal animationType="fade" transparent visible={Boolean(role)} onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.roleModal}>
+          {role ? <RoleAvatar role={role} size={92} /> : null}
+          <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{role?.name}</Text>
+          <Text style={[styles.muted, isArabic && styles.rtlText]}>{role?.description}</Text>
+          <SecondaryButton label={t("cancel")} onPress={onClose} />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function OfflineReveal({ game, isArabic, roles, setGame, t }) {
+  const player = game.players[game.revealIndex];
+  const role = roles.find((candidate) => candidate.key === player?.roleKey);
+  if (!player) {
+    return null;
+  }
+
+  function handleCardTap() {
+    if (!game.revealVisible) {
+      setGame((current) => ({ ...current, revealVisible: true }));
+      return;
+    }
+
+    const nextIndex = game.revealIndex + 1;
+    setGame((current) => ({
+      ...current,
+      step: nextIndex >= current.players.length ? "narrator" : "reveal",
+      revealIndex: nextIndex,
+      revealVisible: false,
+      phase: nextIndex >= current.players.length ? "night" : current.phase,
+      nightStepIndex: nextIndex >= current.players.length ? 0 : current.nightStepIndex
+    }));
+  }
+
+  return (
+    <View style={styles.revealCenter}>
+      <Pressable onPress={handleCardTap} style={({ pressed }) => [styles.revealTapCard, pressed && styles.pressed]}>
+        {!game.revealVisible ? (
+          <>
+            <Text style={[styles.label, isArabic && styles.rtlText]}>{t("passPhone")}</Text>
+            <Text style={[styles.bigRoleName, isArabic && styles.rtlText]}>{player.name}</Text>
+            <Text style={[styles.smallMuted, isArabic && styles.rtlText]}>{t("showRole")}</Text>
+          </>
+        ) : (
+          <View style={styles.roleReveal}>
+            <RoleAvatar role={role} size={136} />
+            <Text style={[styles.bigRoleName, isArabic && styles.rtlText]}>{role?.name || t("roleMissing")}</Text>
+            <Text style={[styles.roleDescription, isArabic && styles.rtlText]}>{role?.description || ""}</Text>
+            <Text style={[styles.smallMuted, isArabic && styles.rtlText]}>{t("nextPlayer")}</Text>
+          </View>
+        )}
+      </Pressable>
+    </View>
+  );
+}
+
+function OfflineNarratorPanel({ game, isArabic, roles, setGame, t, onClose, onConfirm }) {
+  const [showPlayerList, setShowPlayerList] = useState(true);
+  const nightOrder = getOfflineNightOrder(game.players, roles);
+  const currentRoleKey = nightOrder[game.nightStepIndex];
+  const wolfRole = roles.find((role) => role.faction === "wolves");
+  const currentRole = currentRoleKey === "wolves" ? { key: "wolves", name: t("wolves"), description: t("wolvesWake"), faction: "wolves" } : roles.find((role) => role.key === currentRoleKey);
+  const currentRolePlayers = currentRoleKey === "wolves"
+    ? game.players.filter((player) => player.isAlive && isWolfRoleKey(player.roleKey, roles))
+    : game.players.filter((player) => player.isAlive && player.roleKey === currentRoleKey);
+  const alivePlayers = game.players.filter((player) => player.isAlive);
+  const deadPlayers = game.players.filter((player) => !player.isAlive);
+
+  function toggleLife(playerId) {
+    setGame((current) => ({
+      ...current,
+      players: current.players.map((player) => player.id === playerId ? { ...player, isAlive: !player.isAlive } : player)
+    }));
+  }
+
+  function toggleMark(playerId) {
+    setGame((current) => ({
+      ...current,
+      players: current.players.map((player) => player.id === playerId ? { ...player, marked: !player.marked } : player)
+    }));
+  }
+
+  function nextNightRole() {
+    setGame((current) => {
+      const order = getOfflineNightOrder(current.players, roles);
+      const nextIndex = current.nightStepIndex + 1;
+
+      if (nextIndex >= order.length) {
+        return { ...current, phase: "day", nightStepIndex: 0 };
+      }
+
+      return { ...current, nightStepIndex: nextIndex };
+    });
+  }
+
+  function startNight() {
+    setGame((current) => ({ ...current, phase: "night", nightStepIndex: 0 }));
+  }
+
+  function resetSameNames() {
+    setGame((current) => ({
+      ...current,
+      step: "roles",
+      players: current.players.map((player) => ({ id: player.id, name: player.name, isAlive: true, marked: false })),
+      revealIndex: 0,
+      revealVisible: false,
+      phase: "night",
+      nightStepIndex: 0
+    }));
+  }
+
+  return (
+    <View style={styles.stack}>
+      <View style={styles.panel}>
+        <View style={[styles.roleHeader, isArabic && styles.reverseRow]}>
+          <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{t("narratorPanel")}</Text>
+          <Text style={styles.countPill}>{t(game.phase)}</Text>
+        </View>
+        {game.phase === "night" ? (
+          currentRole ? (
+            <View style={styles.nightGuide}>
+              <View style={[styles.roleMiniHeader, isArabic && styles.reverseRow]}>
+                <RoleAvatar role={currentRoleKey === "wolves" ? wolfRole : currentRole} size={58} />
+                <View style={styles.flex}>
+                  <Text style={[styles.bigRoleName, isArabic && styles.rtlText]}>{currentRole.name}</Text>
+                  <Text style={[styles.smallMuted, isArabic && styles.rtlText]}>{game.nightStepIndex + 1}/{nightOrder.length}</Text>
+                </View>
+              </View>
+              <Text style={[styles.muted, isArabic && styles.rtlText]}>{currentRole.description}</Text>
+              {currentRolePlayers.map((player) => (
+                <Text key={player.id} style={[styles.playerName, isArabic && styles.rtlText]}>{player.name}</Text>
+              ))}
+              <PrimaryButton label={t("nextRole")} onPress={nextNightRole} />
+            </View>
+          ) : (
+            <View style={styles.stack}>
+              <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("noNightRoles")}</Text>
+              <PrimaryButton label={t("day")} onPress={() => setGame((current) => ({ ...current, phase: "day" }))} />
+            </View>
+          )
+        ) : (
+          <View style={styles.stack}>
+            <Text style={[styles.muted, isArabic && styles.rtlText]}>{t("day")}</Text>
+            <PrimaryButton label={t("night")} onPress={startNight} />
+          </View>
+        )}
+      </View>
+
+      <SecondaryButton label={showPlayerList ? t("hidePlayers") : t("showPlayers")} onPress={() => setShowPlayerList((current) => !current)} />
+      {showPlayerList ? (
+        <>
+          <OfflinePlayerList title={t("alive")} players={alivePlayers} roles={roles} isArabic={isArabic} t={t} onToggleLife={toggleLife} onToggleMark={toggleMark} />
+          <OfflinePlayerList title={t("dead")} players={deadPlayers} roles={roles} isArabic={isArabic} t={t} onToggleLife={toggleLife} onToggleMark={toggleMark} />
+        </>
+      ) : null}
+
+      <PrimaryButton label={t("resetGame")} onPress={() => onConfirm(t("confirmTitle"), t("confirmReset"), resetSameNames)} />
+      <SecondaryButton label={t("endGame")} onPress={() => onConfirm(t("confirmTitle"), t("confirmEnd"), onClose)} />
+    </View>
+  );
+}
+
+function OfflinePlayerList({ title, players, roles, isArabic, t, onToggleLife, onToggleMark }) {
+  const tapRef = useRef({ playerId: null, timer: null });
+
+  useEffect(() => () => {
+    if (tapRef.current.timer) {
+      clearTimeout(tapRef.current.timer);
+    }
+  }, []);
+
+  function handlePlayerTap(playerId) {
+    if (tapRef.current.playerId === playerId && tapRef.current.timer) {
+      clearTimeout(tapRef.current.timer);
+      tapRef.current = { playerId: null, timer: null };
+      onToggleMark(playerId);
+      return;
+    }
+
+    if (tapRef.current.timer) {
+      clearTimeout(tapRef.current.timer);
+    }
+
+    const timer = setTimeout(() => {
+      onToggleLife(playerId);
+      tapRef.current = { playerId: null, timer: null };
+    }, 320);
+
+    tapRef.current = { playerId, timer };
+  }
+
+  if (!players.length) {
+    return null;
+  }
+
+  return (
+    <View style={styles.panel}>
+      <Text style={[styles.sectionTitle, isArabic && styles.rtlText]}>{title}</Text>
+      {players.map((player) => {
+        const role = roles.find((candidate) => candidate.key === player.roleKey);
+        return (
+          <Pressable
+            key={player.id}
+            onPress={() => handlePlayerTap(player.id)}
+            style={[styles.narratorPlayer, player.marked && styles.markedPlayerRow, !player.isAlive && styles.deadPlayerRow, isArabic && styles.reverseRow]}
+          >
+            <View style={[styles.playerIdentity, styles.flex, isArabic && styles.reverseRow]}>
+              <RoleAvatar role={role} size={48} />
+              <View style={styles.flex}>
+                <Text style={[styles.playerName, isArabic && styles.rtlText]}>{player.name}</Text>
+                <Text style={[styles.smallMuted, isArabic && styles.rtlText]}>{role?.name || t("roleMissing")}</Text>
+              </View>
+            </View>
+            {player.marked ? <View style={styles.greenMarkDot} /> : null}
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function EventLog({ events, isArabic, t }) {
   if (!events?.length) {
     return null;
@@ -1199,67 +1751,35 @@ const styles = StyleSheet.create({
   flex: {
     flex: 1
   },
+  appShell: {
+    flex: 1
+  },
+  fixedHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 8,
+    paddingBottom: 4,
+    backgroundColor: theme.background,
+    zIndex: 10,
+    elevation: 8
+  },
   scrollContent: {
+    flexGrow: 1,
     padding: 18,
-    paddingBottom: 36,
+    paddingBottom: 110,
     gap: 14
+  },
+  homeScrollContent: {
+    padding: 0,
+    paddingBottom: 0,
+    gap: 0
   },
   centered: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center"
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    paddingTop: 8,
-    paddingBottom: 8
-  },
-  headerText: {
-    flex: 1
-  },
-  settingsButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.panelLight,
-    borderWidth: 1,
-    borderColor: theme.border
-  },
-  settingsButtonText: {
-    color: theme.text,
-    fontSize: 22,
-    fontWeight: "900"
-  },
-  settingsMenu: {
-    backgroundColor: theme.panel,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: theme.border,
-    padding: 12,
-    gap: 10
-  },
-  moon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: theme.gold,
-    borderWidth: 5,
-    borderColor: theme.cream
-  },
-  appTitle: {
-    color: theme.text,
-    fontSize: 34,
-    fontWeight: "800"
-  },
-  headerSubtitle: {
-    color: theme.gold,
-    fontSize: 14,
-    fontWeight: "700",
-    textTransform: "uppercase"
+  homeActions: {
+    gap: 12
   },
   panel: {
     backgroundColor: theme.panel,
@@ -1489,6 +2009,103 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0
   },
+  playerInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  offlinePlayerList: {
+    gap: 8
+  },
+  offlinePlayerOrderRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelLight,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  playerNameDragHandle: {
+    flex: 1,
+    minHeight: 42,
+    justifyContent: "center"
+  },
+  draggingRow: {
+    borderColor: theme.gold,
+    opacity: 0.78
+  },
+  flexInput: {
+    flex: 1
+  },
+  hiddenRoleCard: {
+    minHeight: 210,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.panelLight,
+    padding: 18
+  },
+  revealCenter: {
+    minHeight: 440,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  revealTapCard: {
+    width: "100%",
+    minHeight: 360,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panel,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+    gap: 14
+  },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 22,
+    backgroundColor: "rgba(0, 0, 0, 0.62)"
+  },
+  roleModal: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panel,
+    padding: 18,
+    gap: 12,
+    alignItems: "center"
+  },
+  fixedScrollTopButton: {
+    position: "absolute",
+    right: 18,
+    bottom: 24,
+    zIndex: 20,
+    elevation: 10,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.gold,
+    borderWidth: 1,
+    borderColor: "rgba(35, 21, 13, 0.18)"
+  },
+  scrollTopText: {
+    color: theme.ink,
+    fontSize: 24,
+    fontWeight: "900"
+  },
   playerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1625,6 +2242,18 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(143, 66, 50, 0.18)",
     borderRadius: 8,
     paddingHorizontal: 8
+  },
+  markedPlayerRow: {
+    borderColor: "rgba(124, 132, 86, 0.95)",
+    backgroundColor: "rgba(124, 132, 86, 0.14)"
+  },
+  greenMarkDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: theme.green,
+    borderWidth: 2,
+    borderColor: theme.cream
   },
   roleReveal: {
     alignItems: "center",

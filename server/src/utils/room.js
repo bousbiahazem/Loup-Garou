@@ -1,3 +1,4 @@
+import { getRoleByKey } from "../data/roles.js";
 export function toId(value) {
   if (!value) {
     return "";
@@ -55,6 +56,8 @@ export function sanitizeRoom(room, viewerUserId) {
   const ended = room.status === "ended";
   const votes = serializeVotes(room.votes);
   const currentNightRoleKey = room.nightOrder?.[room.nightStepIndex] || null;
+  const viewerPlayer = room.players.find((player) => toId(player.userId) === viewerId);
+  const viewerIsWolf = isWolfRole(viewerPlayer?.roleKey);
 
   return {
     id: room._id.toString(),
@@ -89,7 +92,8 @@ export function sanitizeRoom(room, viewerUserId) {
       : null,
     players: room.players.map((player) => {
       const ownRole = toId(player.userId) === viewerId;
-      const canSeeRole = player.isNarrator || narratorView || ended || ownRole;
+      const wolfMate = viewerIsWolf && isWolfRole(player.roleKey);
+      const canSeeRole = player.isNarrator || narratorView || ended || ownRole || wolfMate;
 
       return {
         id: player._id.toString(),
@@ -121,4 +125,8 @@ export function addRoomEvent(room, type, message, createdBy) {
   if (room.events.length > 60) {
     room.events = room.events.slice(-60);
   }
+}
+
+function isWolfRole(roleKey) {
+  return getRoleByKey(roleKey)?.faction === "wolves";
 }
